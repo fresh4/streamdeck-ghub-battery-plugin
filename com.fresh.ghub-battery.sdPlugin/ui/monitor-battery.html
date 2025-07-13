@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+	<head>
+		<title>Monitor G Hub Battery Settings</title>
+		<meta charset="utf-8" />
+		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<sdpi-item label="Device Name">
+			<sdpi-textfield setting="name" pattern="/^[a-z ,.'-]+$/i" placeholder="Mouse"> </sdpi-textfield>
+		</sdpi-item>
+
+		<sdpi-item label="Selected Device">
+			<sdpi-select setting="device" datasource="getDevices" loading="Fetching devices..." hot-reload />
+		</sdpi-item>
+
+		<sdpi-item label="Background Color">
+			<sdpi-textfield setting="bg" pattern="/^[a-z ,.'-]+$/i" placeholder="#12142D"> </sdpi-textfield>
+		</sdpi-item>
+	</body>
+</html>
