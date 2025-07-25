@@ -36,9 +36,9 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 			if (ev.action.id !== ctx) continue;
 			if (ws) {
 				inst.name = ev.payload.settings.name ?? "";
-				inst.deviceId = ev.payload.settings.device;
-				inst.backgroundColor = ev.payload.settings.bg;
-				websocketSend(ws, `/battery/${ev.payload.settings.device}/state`);
+				inst.deviceId = ev.payload.settings.device ?? inst.deviceId;
+				inst.backgroundColor = ev.payload.settings.bg ?? inst.backgroundColor;
+				websocketSend(ws, `/battery/${inst.deviceId}/state`);
 			}
 		}
 	}
@@ -99,7 +99,7 @@ function handleWebsocketMessage(msg: RawData): void {
 			const devId = inst.deviceId || devices[0].id;
 			if (devId) {
 				inst.deviceId = devId;
-				websocketSend(ws!, `/battery/${devId}/state`);
+				websocketSend(ws, `/battery/${devId}/state`);
 			}
 		}
 	}
