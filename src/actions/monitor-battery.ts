@@ -226,10 +226,10 @@ async function createCompositeImage(backgroundColor: string, iconPath: string): 
 	const canvas = await new Jimp({ width: size, height: size });
 
 	// Parse the background color (convert hex to ARGB integer)
-	const hex = parseInt(backgroundColor.split("#")[1], 16);
+	const hex = parseInt(`${backgroundColor.split("#")[1]}ff`, 16);
 
 	// Fill with the background color
-	canvas.scan(0, 0, size, size, (x, y, idx) => {
+	canvas.scan(0, 0, size, size, (x, y, idx: number) => {
 		canvas.bitmap.data.writeUInt32BE(hex, idx);
 	});
 
