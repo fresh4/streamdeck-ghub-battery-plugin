@@ -11,7 +11,7 @@ import {
 	WillAppearEvent,
 } from "@elgato/streamdeck";
 import streamDeck from "@elgato/streamdeck";
-import { createCanvas, loadImage } from "canvas";
+import { Jimp } from "jimp";
 import { RawData, WebSocket } from "ws";
 
 import type { BatteryState, Device, DeviceList, Instance, MonitorSettings } from "../types";
@@ -221,23 +221,30 @@ function getBatteryImage(bs: BatteryState): string {
  */
 async function createCompositeImage(backgroundColor: string, iconPath: string): Promise<string> {
 	const size = 72;
-	const canvas = createCanvas(size, size);
-	const ctx = canvas.getContext("2d");
 
-	// Fill background
-	ctx.fillStyle = backgroundColor;
-	ctx.fillRect(0, 0, size, size);
+	// Create a blank image (defaults to black)
+	const canvas = await new Jimp({ width: size, height: size });
 
-	// Load icon
-	const icon = await loadImage(`${iconPath}@2x.png`);
+	// Parse the background color (convert hex to ARGB integer)
+	const hex = parseInt(backgroundColor.split("#")[1], 16);
 
-	// Draw icon centered
-	const iconSize = 64;
-	const offset = (size - iconSize) / 2;
-	ctx.drawImage(icon, offset, offset, iconSize, iconSize);
+	// Fill with the background color
+	canvas.scan(0, 0, size, size, (x, y, idx) => {
+		canvas.bitmap.data.writeUInt32BE(hex, idx);
+	});
 
-	// Return base64 PNG for setImage
-	return canvas.toDataURL();
+	// Load and resize the icon
+	const icon = await Jimp.read(`${iconPath}@2x.png`);
+	await icon.resize({ w: 64 }); // maintain aspect ratio
+
+	// Center the icon
+	const offsetX = (size - icon.bitmap.width) / 2;
+	const offsetY = (size - icon.bitmap.height) / 2;
+	canvas.composite(icon, offsetX, offsetY);
+
+	// Export as Base64 PNG
+	const buffer = await canvas.getBuffer("image/png");
+	return `data:image/png;base64,${buffer.toString("base64")}`;
 }
 
 /**

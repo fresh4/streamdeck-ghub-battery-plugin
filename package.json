@@ -24,6 +24,6 @@
     "dependencies": {
         "@elgato/streamdeck": "^1.0.0",
         "@rollup/plugin-json": "^6.1.0",
-        "canvas": "^3.1.2"
+        "jimp": "^1.6.0"
     }
 }
