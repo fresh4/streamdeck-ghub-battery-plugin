@@ -23,6 +23,11 @@ export type MonitorSettings = {
 	 * Hexadecimal string for the background color.
 	 */
 	bg: string;
+
+	/**
+	 * Number of line breaks between title and percentage.
+	 */
+	spacing: number;
 };
 
 /**
@@ -127,4 +132,8 @@ export type Instance = {
 	 * Hexadecimal string for the icon's background color.
 	 */
 	backgroundColor: string;
+	/**
+	 * How many line breaks between the title and the percentage shown.
+	 */
+	spacing: number;
 };

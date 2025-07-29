@@ -38,6 +38,7 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 				inst.name = ev.payload.settings.name ?? "";
 				inst.deviceId = ev.payload.settings.device ?? inst.deviceId;
 				inst.backgroundColor = ev.payload.settings.bg ?? inst.backgroundColor;
+				inst.spacing = ev.payload.settings.spacing ?? 2;
 				websocketSend(ws, `/battery/${inst.deviceId}/state`);
 			}
 		}
@@ -63,6 +64,7 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 			percentage: 100,
 			charging: false,
 			backgroundColor: ev.payload.settings.bg ?? "",
+			spacing: ev.payload.settings.spacing ?? 2,
 		});
 
 		if (!ws) ws = getWebsocketConnection();
@@ -70,7 +72,7 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 
 		// Once the websocket connection is made, make the initial requests and subscriptions.
 		ws.on("open", () => {
-			if (ws) initializeWebsocket(ws);
+			initializeWebsocket(ws!);
 		});
 
 		// Handle every response returned from the websocket server.
@@ -131,9 +133,9 @@ function handleWebsocketMessage(msg: RawData): void {
 
 				inst.percentage = _ws.payload.percentage;
 				inst.charging = _ws.payload.charging;
-
+				const spacingValue = "\n".repeat(inst.spacing);
 				const image = getBatteryImage(_ws);
-				const title = inst.name ? `${inst.name}\n\n${inst.percentage}%` : `${inst.percentage}%`;
+				const title = inst.name ? `${inst.name}${spacingValue}${inst.percentage}%` : `${inst.percentage}%`;
 				if (action.id == ctx) {
 					setCompositeImage(action, image);
 					action.setTitle(title);

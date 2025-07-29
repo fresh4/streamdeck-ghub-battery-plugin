@@ -3,7 +3,7 @@
 	<head>
 		<title>Monitor G Hub Battery Settings</title>
 		<meta charset="utf-8" />
-		<script src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+		<script src="sdpi-components.js"></script>
 	</head>
 	<body>
 		<sdpi-item label="Device Name">
@@ -16,6 +16,9 @@
 
 		<sdpi-item label="Background Color">
 			<sdpi-textfield setting="bg" pattern="/^[a-z ,.'-]+$/i" placeholder="#12142D"> </sdpi-textfield>
+		</sdpi-item>
+		<sdpi-item label="Spacing">
+			<sdpi-range setting="spacing" min="1" max="4" step="1" default="2" showlabels />
 		</sdpi-item>
 	</body>
 </html>
