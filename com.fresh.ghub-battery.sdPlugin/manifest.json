@@ -1,50 +1,50 @@
 {
-    "Name": "GHub Battery",
-    "Version": "1.1.2.0",
-    "Author": "Fresh",
-    "Actions": [
-        {
-            "Name": "G Hub Device",
-            "UserTitleEnabled": false,
-            "UUID": "com.fresh.ghub-battery.monitor",
-            "Icon": "imgs/actions/monitor/icon",
-            "Tooltip": "Monitors the selected G Hub device's battery status.",
-            "PropertyInspectorPath": "ui/monitor-battery.html",
-            "Controllers": [
-                "Keypad"
-            ],
-            "States": [
-                {
-                    "Image": "imgs/actions/monitor/key-100",
-                    "TitleAlignment": "middle",
-                    "FontSize": 14,
-                    "FontFamily": "Verdana"
-                }
-            ]
-        }
-    ],
-    "Category": "GHub Battery",
-    "CategoryIcon": "imgs/plugin/category-icon",
-    "CodePath": "bin/plugin.js",
-    "Description": "A battery monitoring tool for Logitech G Hub devices.",
-    "Icon": "imgs/plugin/marketplace-icon",
-    "SDKVersion": 2,
-    "Software": {
-        "MinimumVersion": "6.5"
-    },
-    "OS": [
-        {
-            "Platform": "mac",
-            "MinimumVersion": "12"
-        },
-        {
-            "Platform": "windows",
-            "MinimumVersion": "10"
-        }
-    ],
-    "Nodejs": {
-        "Version": "20",
-        "Debug": "enabled"
-    },
-    "UUID": "com.fresh.ghub-battery"
+	"Name": "GHub Battery",
+	"Version": "1.2.0.0",
+	"Author": "Fresh",
+	"Actions": [
+		{
+			"Name": "G Hub Device",
+			"UserTitleEnabled": false,
+			"UUID": "com.fresh.ghub-battery.monitor",
+			"Icon": "imgs/actions/monitor/icon",
+			"Tooltip": "Monitors the selected G Hub device's battery status.",
+			"PropertyInspectorPath": "ui/monitor-battery.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"States": [
+				{
+					"Image": "imgs/actions/monitor/key-100",
+					"TitleAlignment": "middle",
+					"FontSize": 14,
+					"FontFamily": "Verdana"
+				}
+			]
+		}
+	],
+	"Category": "GHub Battery",
+	"CategoryIcon": "imgs/plugin/category-icon",
+	"CodePath": "bin/plugin.js",
+	"Description": "A battery monitoring tool for Logitech G Hub devices.",
+	"Icon": "imgs/plugin/marketplace-icon",
+	"SDKVersion": 2,
+	"Software": {
+		"MinimumVersion": "6.5"
+	},
+	"OS": [
+		{
+			"Platform": "mac",
+			"MinimumVersion": "12"
+		},
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		}
+	],
+	"Nodejs": {
+		"Version": "20",
+		"Debug": "enabled"
+	},
+	"UUID": "com.fresh.ghub-battery"
 }

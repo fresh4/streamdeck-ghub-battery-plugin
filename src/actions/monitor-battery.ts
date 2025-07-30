@@ -18,6 +18,9 @@ import type { BatteryState, Device, DeviceList, Instance, MonitorSettings } from
 
 let devices: Device[] = [];
 let ws: WebSocket | null = null;
+let isConnecting = false; // Track connection attempts to avoid duplicates
+let reconnectInterval: NodeJS.Timeout | null = null; // Store reconnection interval
+const RECONNECT_INTERVAL_MS = 5000; // Retry every 5 seconds
 
 const instances = new Map<string, Instance>();
 
@@ -32,15 +35,15 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 	// Handle change in user defined settings from UI.
 	// eslint-disable-next-line jsdoc/require-jsdoc
 	override onDidReceiveSettings(ev: DidReceiveSettingsEvent<MonitorSettings>): Promise<void> | void {
-		for (const [ctx, inst] of instances.entries()) {
-			if (ev.action.id !== ctx) continue;
-			if (ws) {
-				inst.name = ev.payload.settings.name ?? "";
-				inst.deviceId = ev.payload.settings.device ?? inst.deviceId;
-				inst.backgroundColor = ev.payload.settings.bg ?? inst.backgroundColor;
-				inst.spacing = ev.payload.settings.spacing ?? 2;
-				websocketSend(ws, `/battery/${inst.deviceId}/state`);
-			}
+		const instance = instances.get(ev.action.id);
+		if (!instance) return;
+
+		instance.name = ev.payload.settings.name ?? "";
+		instance.deviceId = ev.payload.settings.device ?? instance.deviceId;
+		instance.backgroundColor = ev.payload.settings.bg ?? instance.backgroundColor;
+		instance.spacing = ev.payload.settings.spacing ?? 2;
+		if (ws?.readyState === WebSocket.OPEN && instance.deviceId) {
+			websocketSend(ws, `/battery/${instance.deviceId}/state`);
 		}
 	}
 
@@ -53,6 +56,9 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 				items: devices.map((device) => ({ label: device.displayName, value: device.id })),
 			});
 		}
+		if (ev.payload instanceof Object && "event" in ev.payload && ev.payload.event === "refreshDevices") {
+			ws?.send(JSON.stringify({ path: "/devices/list", verb: "GET" }));
+		}
 	}
 
 	// Runs once whenever a button instance "appears"; initial set up for websockets and event listeners.
@@ -61,23 +67,73 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 		instances.set(ev.action.id, {
 			deviceId: ev.payload.settings.device ?? "",
 			name: ev.payload.settings.name ?? "",
-			percentage: 100,
-			charging: false,
-			backgroundColor: ev.payload.settings.bg ?? "",
+			percentage: ev.payload.settings.value ?? 100,
+			charging: ev.payload.settings.pluggedIn ?? false,
+			backgroundColor: ev.payload.settings.bg ?? "#12142D",
 			spacing: ev.payload.settings.spacing ?? 2,
 		});
 
-		if (!ws) ws = getWebsocketConnection();
-		if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify({ path: "/devices/list", verb: "GET" }));
-
-		// Once the websocket connection is made, make the initial requests and subscriptions.
-		ws.on("open", () => {
-			initializeWebsocket(ws!);
-		});
-
-		// Handle every response returned from the websocket server.
-		ws.on("message", (msg) => handleWebsocketMessage(msg));
+		if (!ws && !isConnecting) startWebSocketConnection();
+		websocketSend(ws!, "/devices/list", "GET");
 	}
+}
+
+/**
+ * Starts the WebSocket connection and sets up reconnection logic.
+ */
+function startWebSocketConnection(): void {
+	if (isConnecting) return;
+	isConnecting = true;
+
+	ws = getWebsocketConnection();
+
+	ws.on("open", () => {
+		streamDeck.logger.info("WebSocket connected to G HUB");
+		isConnecting = false;
+		if (reconnectInterval) {
+			clearInterval(reconnectInterval);
+			reconnectInterval = null;
+		}
+		initializeWebsocket(ws!);
+	});
+
+	ws.on("message", (msg) => handleWebsocketMessage(msg));
+
+	ws.on("error", (err) => {
+		streamDeck.logger.error("WebSocket error:", err.message);
+		cleanupWebSocket();
+		scheduleReconnect();
+	});
+
+	ws.on("close", () => {
+		streamDeck.logger.info("WebSocket closed");
+		cleanupWebSocket();
+		scheduleReconnect();
+	});
+}
+
+/**
+ * Cleans up the WebSocket connection.
+ */
+function cleanupWebSocket(): void {
+	if (ws) {
+		ws.removeAllListeners();
+		ws = null;
+	}
+	isConnecting = false;
+}
+
+/**
+ * Schedules a reconnection attempt if not already scheduled.
+ */
+function scheduleReconnect(): void {
+	if (reconnectInterval || instances.size === 0) return;
+	reconnectInterval = setInterval(() => {
+		if (!ws && !isConnecting) {
+			streamDeck.logger.info("Attempting to reconnect to G HUB WebSocket");
+			startWebSocketConnection();
+		}
+	}, RECONNECT_INTERVAL_MS);
 }
 
 /**
@@ -88,14 +144,9 @@ function handleWebsocketMessage(msg: RawData): void {
 
 	// Handles logic upon receiving a new device list.
 	if (ws && payload.path === "/devices/list") {
-		const _ws = payload as DeviceList;
-
-		devices = [];
-		_ws.payload.deviceInfos.forEach((d) => {
-			if (d && d.capabilities && d.capabilities.hasBatteryStatus) {
-				devices.push(d);
-			}
-		});
+		streamDeck.logger.debug("sent device list request");
+		const deviceList = payload as DeviceList;
+		devices = deviceList.payload.deviceInfos.filter((d) => d?.capabilities?.hasBatteryStatus);
 
 		for (const [, inst] of instances.entries()) {
 			const devId = inst.deviceId || devices[0].id;
@@ -104,43 +155,46 @@ function handleWebsocketMessage(msg: RawData): void {
 				websocketSend(ws, `/battery/${devId}/state`);
 			}
 		}
+		// Notify Property Inspector of updated device list
+		streamDeck.ui.current?.sendToPropertyInspector({
+			event: "getDevices",
+			items: devices.map((device) => ({ label: device.displayName, value: device.id })),
+		});
 	}
 
 	// Handles whenever the devices battery or charge state updates.
 	// Includes updating the percentage value and battery image.
 	if (payload.path.includes("/battery/")) {
-		const _ws = payload as BatteryState;
+		const batteryState = payload as BatteryState;
 
 		// Device not found, probably inactive.
-		if (!_ws.payload) {
+		if (!batteryState.payload) {
+			const failedDevice = batteryState.path.split("/battery/")[1].split("/")[0];
 			for (const action of streamDeck.actions) {
-				for (const [ctx, inst] of instances.entries()) {
-					const failedDevice = _ws.path.split("/battery/")[1].split("/")[0];
-					if (ctx == action.id && inst.deviceId == failedDevice) {
-						setCompositeImage(action, "imgs/actions/monitor/asleep");
-						action.setTitle("");
-					}
+				const instance = instances.get(action.id);
+				if (instance?.deviceId === failedDevice) {
+					setCompositeImage(action, "imgs/actions/monitor/asleep");
+					action.setTitle("");
 				}
 			}
 			return;
 		}
 
 		// For the specific context and device, update its image and title to match what was
-		// received from the websocket updates. Double for loop required for context matching.
+		// received from the websocket updates.
 		for (const action of streamDeck.actions) {
-			for (const [ctx, inst] of instances.entries()) {
-				if (inst.deviceId !== _ws.payload.deviceId) continue;
+			const instance = instances.get(action.id);
+			if (instance?.deviceId !== batteryState.payload.deviceId) continue;
 
-				inst.percentage = _ws.payload.percentage;
-				inst.charging = _ws.payload.charging;
-				const spacingValue = "\n".repeat(inst.spacing);
-				const image = getBatteryImage(_ws);
-				const title = inst.name ? `${inst.name}${spacingValue}${inst.percentage}%` : `${inst.percentage}%`;
-				if (action.id == ctx) {
-					setCompositeImage(action, image);
-					action.setTitle(title);
-				}
-			}
+			instance.percentage = batteryState.payload.percentage;
+			instance.charging = batteryState.payload.charging;
+			const spacingValue = "\n".repeat(instance.spacing);
+			const image = getBatteryImage(batteryState);
+			const title = instance.name
+				? `${instance.name}${spacingValue}${instance.percentage}%`
+				: `${instance.percentage}%`;
+			setCompositeImage(action, image);
+			action.setTitle(title);
 		}
 	}
 }
@@ -153,7 +207,7 @@ function handleWebsocketMessage(msg: RawData): void {
  */
 function websocketSend(ws: WebSocket, path: string, verb: string = "GET"): void {
 	try {
-		ws.send(JSON.stringify({ path: path, verb: verb }));
+		if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ path, verb }));
 	} catch {
 		streamDeck.logger.debug("There was an error sending the websocket request", path);
 	}
