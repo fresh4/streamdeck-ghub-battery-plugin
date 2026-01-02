@@ -140,41 +140,76 @@ function scheduleReconnect(): void {
  * @param msg The raw data returned by the Websocket server.
  */
 function handleWebsocketMessage(msg: RawData): void {
-	const payload: BatteryState | DeviceList = JSON.parse(msg.toString("utf-8"));
+	const payload = JSON.parse(msg.toString("utf-8")) as DeviceList | BatteryState;
 
 	// Handles logic upon receiving a new device list.
 	if (ws && payload.path === "/devices/list") {
 		streamDeck.logger.debug("sent device list request");
+
 		const deviceList = payload as DeviceList;
+
 		if (!deviceList.payload.deviceInfos) {
+			streamDeck.logger.error("No device list! Retrying.");
 			cleanupWebSocket();
 			scheduleReconnect();
 			return;
 		}
-		devices = deviceList.payload.deviceInfos.filter((d) => d?.capabilities?.hasBatteryStatus);
+
+		devices = deviceList.payload.deviceInfos.filter(
+			(d) =>
+				d?.capabilities?.hasBatteryStatus ||
+				d?.capabilities?.isWireless ||
+				d?.capabilities?.isAudio
+		);
 
 		for (const [, inst] of instances.entries()) {
-			const devId = inst.deviceId || devices[0].id;
+			const devId = inst.deviceId || devices[0]?.id;
 			if (devId) {
 				inst.deviceId = devId;
 				websocketSend(ws, `/battery/${devId}/state`);
+				// G Fits are NOT always under /battery
+				websocketSend(ws, `/gfits/${devId}/state`);
 			}
 		}
+
 		// Notify Property Inspector of updated device list
 		streamDeck.ui.current?.sendToPropertyInspector({
 			event: "getDevices",
-			items: devices.map((device) => ({ label: device.displayName, value: device.id })),
+			items: devices.map((device) => ({
+				label: device.displayName,
+				value: device.id,
+			})),
 		});
 	}
 
-	// Handles whenever the devices battery or charge state updates.
-	// Includes updating the percentage value and battery image.
-	if (payload.path.includes("/battery/")) {
-		const batteryState = payload as BatteryState;
+	// Handle battery OR G Fits updates
+	if (payload.path.includes("/battery/") || payload.path.includes("/gfits/")) {
+		const deviceState = payload as BatteryState;
+		const devId = deviceState.payload?.deviceId;
 
-		// Device not found, probably inactive.
-		if (!batteryState.payload) {
-			const failedDevice = batteryState.path.split("/battery/")[1].split("/")[0];
+		// Auto-add devices not present in /devices/list (e.g. G Fits)
+		if (devId && !devices.some((d) => d.id === devId)) {
+			devices.push({
+				id: devId,
+				pid: -1,
+				displayName: "G Fits",
+				capabilities: {
+					hasBatteryStatus: true,
+				},
+			});
+
+			streamDeck.ui.current?.sendToPropertyInspector({
+				event: "getDevices",
+				items: devices.map((device) => ({
+					label: device.displayName,
+					value: device.id,
+				})),
+			});
+		}
+
+		// Device not found, probably inactive
+		if (!deviceState.payload) {
+			const failedDevice = deviceState.path.split("/").pop();
 			for (const action of streamDeck.actions) {
 				const instance = instances.get(action.id);
 				if (instance?.deviceId === failedDevice) {
@@ -185,19 +220,23 @@ function handleWebsocketMessage(msg: RawData): void {
 			return;
 		}
 
-		// For the specific context and device, update its image and title to match what was
-		// received from the websocket updates.
+		// Update image and title for matching instances
 		for (const action of streamDeck.actions) {
 			const instance = instances.get(action.id);
-			if (instance?.deviceId !== batteryState.payload.deviceId) continue;
+			if (instance?.deviceId !== devId) continue;
 
-			instance.percentage = batteryState.payload.percentage;
-			instance.charging = batteryState.payload.charging;
-			const spacingValue = "\n".repeat(instance.spacing);
-			const image = getBatteryImage(batteryState);
+			instance.percentage =
+				deviceState.payload.percentage ?? instance.percentage;
+			instance.charging =
+				deviceState.payload.charging ?? instance.charging;
+
+			const spacingValue = "\n".repeat(instance.spacing ?? 0);
+			const image = getBatteryImage(deviceState);
+
 			const title = instance.name
-				? `${instance.name}${spacingValue}${instance.percentage}%`
-				: `${instance.percentage}%`;
+				? `${instance.name}${spacingValue}${instance.percentage ?? 0}%`
+				: `${instance.percentage ?? 0}%`;
+
 			setCompositeImage(action, image);
 			action.setTitle(title);
 		}
