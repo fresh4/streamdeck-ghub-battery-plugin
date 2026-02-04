@@ -39,9 +39,25 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 		if (!instance) return;
 
 		instance.name = ev.payload.settings.name ?? "";
-		instance.deviceId = ev.payload.settings.device ?? instance.deviceId;
 		instance.backgroundColor = ev.payload.settings.bg ?? instance.backgroundColor;
 		instance.spacing = ev.payload.settings.spacing ?? 2;
+
+		// Update device ID and look up the display name for reliable re-matching after sleep/wake
+		const newDeviceId = ev.payload.settings.device ?? instance.deviceId;
+		if (newDeviceId && newDeviceId !== instance.deviceId) {
+			instance.deviceId = newDeviceId;
+			// Find and store the display name for this device
+			const matchedDevice = devices.find((d) => d.id === newDeviceId);
+			if (matchedDevice) {
+				instance.deviceDisplayName = matchedDevice.displayName;
+				// Persist the display name back to settings
+				ev.action.setSettings({
+					...ev.payload.settings,
+					deviceDisplayName: matchedDevice.displayName,
+				});
+			}
+		}
+
 		if (ws?.readyState === WebSocket.OPEN && instance.deviceId) {
 			websocketSend(ws, `/battery/${instance.deviceId}/state`);
 		}
@@ -66,6 +82,7 @@ export class MonitorBattery extends SingletonAction<MonitorSettings> {
 	override onWillAppear(ev: WillAppearEvent<MonitorSettings>): Promise<void> | void {
 		instances.set(ev.action.id, {
 			deviceId: ev.payload.settings.device ?? "",
+			deviceDisplayName: ev.payload.settings.deviceDisplayName ?? "",
 			name: ev.payload.settings.name ?? "",
 			percentage: ev.payload.settings.value ?? 100,
 			charging: ev.payload.settings.pluggedIn ?? false,
@@ -153,10 +170,65 @@ function handleWebsocketMessage(msg: RawData): void {
 		}
 		devices = deviceList.payload.deviceInfos.filter((d) => d?.capabilities?.hasBatteryStatus);
 
-		for (const [, inst] of instances.entries()) {
-			const devId = inst.deviceId || devices[0].id;
-			if (devId) {
+		for (const [actionId, inst] of instances.entries()) {
+			const originalDevId = inst.deviceId;
+			let devId = originalDevId;
+			let matchedDevice: Device | undefined;
+
+			// Validate that the saved device ID still exists in the current device list
+			// G HUB assigns dynamic IDs that can change after sleep/wake cycles
+			matchedDevice = devices.find((d) => d.id === devId);
+
+			if (!matchedDevice && devId) {
+				// Device ID no longer valid - try to re-match by G HUB display name first
+				if (inst.deviceDisplayName) {
+					matchedDevice = devices.find((d) => d.displayName === inst.deviceDisplayName);
+					if (matchedDevice) {
+						streamDeck.logger.info(
+							`Device ID changed after sleep/wake, re-matched "${inst.deviceDisplayName}" to ${matchedDevice.id}`,
+						);
+					}
+				}
+
+				// If still not found, try matching by user's custom name as fallback
+				if (!matchedDevice && inst.name) {
+					matchedDevice = devices.find((d) =>
+						d.displayName.toLowerCase().includes(inst.name.toLowerCase()),
+					);
+					if (matchedDevice) {
+						streamDeck.logger.info(
+							`Device ID changed, re-matched by custom name "${inst.name}" to ${matchedDevice.id}`,
+						);
+					}
+				}
+
+				// Last resort: fall back to first available device
+				if (!matchedDevice && devices.length > 0) {
+					streamDeck.logger.info(`Device ID ${devId} no longer valid, falling back to first device`);
+					matchedDevice = devices[0];
+				}
+
+				devId = matchedDevice?.id || "";
+			} else if (!devId && devices.length > 0) {
+				// No device set yet, use first available
+				matchedDevice = devices[0];
+				devId = matchedDevice.id;
+			}
+
+			if (devId && matchedDevice) {
 				inst.deviceId = devId;
+				inst.deviceDisplayName = matchedDevice.displayName;
+
+				// Persist the updated device ID and display name back to Stream Deck settings if changed
+				if (devId !== originalDevId || !inst.deviceDisplayName) {
+					const action = [...streamDeck.actions].find((a) => a.id === actionId);
+					if (action) {
+						action.setSettings({
+							device: devId,
+							deviceDisplayName: matchedDevice.displayName,
+						} as Partial<MonitorSettings>);
+					}
+				}
 				websocketSend(ws, `/battery/${devId}/state`);
 			}
 		}
