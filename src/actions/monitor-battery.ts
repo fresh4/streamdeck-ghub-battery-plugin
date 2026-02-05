@@ -24,6 +24,12 @@ const RECONNECT_INTERVAL_MS = 5000; // Retry every 5 seconds
 
 const instances = new Map<string, Instance>();
 
+// Track battery request retries for devices that aren't ready after sleep/wake
+const batteryRetryTimers = new Map<string, NodeJS.Timeout>();
+const BATTERY_RETRY_DELAY_MS = 2000; // Wait 2 seconds before retrying
+const MAX_BATTERY_RETRIES = 5; // Maximum retry attempts
+const batteryRetryCount = new Map<string, number>();
+
 /**
  * This action connects to an existing G Hub instance via its dedicated Websocket server and
  * monitors it for changes and updates, including changes in battery percentage and plugged in status.
@@ -138,6 +144,13 @@ function cleanupWebSocket(): void {
 		ws = null;
 	}
 	isConnecting = false;
+
+	// Clear any pending battery retry timers
+	for (const timer of batteryRetryTimers.values()) {
+		clearTimeout(timer);
+	}
+	batteryRetryTimers.clear();
+	batteryRetryCount.clear();
 }
 
 /**
@@ -170,73 +183,15 @@ function handleWebsocketMessage(msg: RawData): void {
 		}
 		devices = deviceList.payload.deviceInfos.filter((d) => d?.capabilities?.hasBatteryStatus);
 
-		for (const [actionId, inst] of instances.entries()) {
-			const originalDevId = inst.deviceId;
-			let devId = originalDevId;
-			let matchedDevice: Device | undefined;
-
-			// Validate that the saved device ID still exists in the current device list
-			// G HUB assigns dynamic IDs that can change after sleep/wake cycles
-			matchedDevice = devices.find((d) => d.id === devId);
-
-			if (!matchedDevice && devId) {
-				// Device ID no longer valid - try to re-match by G HUB display name first
-				if (inst.deviceDisplayName) {
-					matchedDevice = devices.find((d) => d.displayName === inst.deviceDisplayName);
-					if (matchedDevice) {
-						streamDeck.logger.info(
-							`Device ID changed after sleep/wake, re-matched "${inst.deviceDisplayName}" to ${matchedDevice.id}`,
-						);
-					}
-				}
-
-				// If still not found, try matching by user's custom name as fallback
-				if (!matchedDevice && inst.name) {
-					matchedDevice = devices.find((d) =>
-						d.displayName.toLowerCase().includes(inst.name.toLowerCase()),
-					);
-					if (matchedDevice) {
-						streamDeck.logger.info(
-							`Device ID changed, re-matched by custom name "${inst.name}" to ${matchedDevice.id}`,
-						);
-					}
-				}
-
-				// Last resort: fall back to first available device
-				if (!matchedDevice && devices.length > 0) {
-					streamDeck.logger.info(`Device ID ${devId} no longer valid, falling back to first device`);
-					matchedDevice = devices[0];
-				}
-
-				devId = matchedDevice?.id || "";
-			} else if (!devId && devices.length > 0) {
-				// No device set yet, use first available
-				matchedDevice = devices[0];
-				devId = matchedDevice.id;
-			}
-
-			if (devId && matchedDevice) {
-				inst.deviceId = devId;
-				inst.deviceDisplayName = matchedDevice.displayName;
-
-				// Persist the updated device ID and display name back to Stream Deck settings if changed
-				if (devId !== originalDevId || !inst.deviceDisplayName) {
-					const action = [...streamDeck.actions].find((a) => a.id === actionId);
-					if (action) {
-						action.setSettings({
-							device: devId,
-							deviceDisplayName: matchedDevice.displayName,
-						} as Partial<MonitorSettings>);
-					}
-				}
-				websocketSend(ws, `/battery/${devId}/state`);
-			}
+		// Clear all retry state since we have a fresh device list
+		for (const timer of batteryRetryTimers.values()) {
+			clearTimeout(timer);
 		}
-		// Notify Property Inspector of updated device list
-		streamDeck.ui.current?.sendToPropertyInspector({
-			event: "getDevices",
-			items: devices.map((device) => ({ label: device.displayName, value: device.id })),
-		});
+		batteryRetryTimers.clear();
+		batteryRetryCount.clear();
+
+		// Process device re-matching asynchronously to properly await getSettings
+		void processDeviceList(ws);
 	}
 
 	// Handles whenever the devices battery or charge state updates.
@@ -244,9 +199,53 @@ function handleWebsocketMessage(msg: RawData): void {
 	if (payload.path.includes("/battery/")) {
 		const batteryState = payload as BatteryState;
 
-		// Device not found, probably inactive.
+		// Device not found, probably inactive or not ready after sleep/wake.
 		if (!batteryState.payload) {
 			const failedDevice = batteryState.path.split("/battery/")[1].split("/")[0];
+
+			// Check if this device ID exists in the current device list from G Hub
+			// This is more reliable than checking instances since device IDs change after sleep/wake
+			const deviceExistsInGHub = devices.some((d) => d.id === failedDevice);
+
+			if (!deviceExistsInGHub) {
+				// This is a stale response for an old device ID that no longer exists in G Hub
+				streamDeck.logger.debug(`Ignoring battery failure for stale device ID ${failedDevice} (not in current device list)`);
+				batteryRetryCount.delete(failedDevice);
+				const existingTimer = batteryRetryTimers.get(failedDevice);
+				if (existingTimer) {
+					clearTimeout(existingTimer);
+					batteryRetryTimers.delete(failedDevice);
+				}
+				return;
+			}
+
+			// Check if we should retry - devices may not be ready immediately after sleep/wake
+			const retryCount = batteryRetryCount.get(failedDevice) ?? 0;
+			if (retryCount < MAX_BATTERY_RETRIES && ws?.readyState === WebSocket.OPEN) {
+				// Clear any existing retry timer for this device
+				const existingTimer = batteryRetryTimers.get(failedDevice);
+				if (existingTimer) clearTimeout(existingTimer);
+
+				// Schedule a retry
+				batteryRetryCount.set(failedDevice, retryCount + 1);
+				streamDeck.logger.info(
+					`Battery request failed for ${failedDevice}, scheduling retry ${retryCount + 1}/${MAX_BATTERY_RETRIES}`,
+				);
+
+				const timer = setTimeout(() => {
+					batteryRetryTimers.delete(failedDevice);
+					if (ws?.readyState === WebSocket.OPEN) {
+						websocketSend(ws, `/battery/${failedDevice}/state`);
+					}
+				}, BATTERY_RETRY_DELAY_MS);
+				batteryRetryTimers.set(failedDevice, timer);
+				return; // Don't show asleep icon yet while retrying
+			}
+
+			// Max retries reached or WebSocket not open, show asleep icon
+			streamDeck.logger.info(`Device ${failedDevice} not responding after ${retryCount} retries, showing asleep`);
+			batteryRetryCount.delete(failedDevice); // Reset for next time
+
 			for (const action of streamDeck.actions) {
 				const instance = instances.get(action.id);
 				if (instance?.deviceId === failedDevice) {
@@ -256,6 +255,9 @@ function handleWebsocketMessage(msg: RawData): void {
 			}
 			return;
 		}
+
+		// Battery request succeeded - clear retry count for this device
+		batteryRetryCount.delete(batteryState.payload.deviceId);
 
 		// For the specific context and device, update its image and title to match what was
 		// received from the websocket updates.
@@ -274,6 +276,93 @@ function handleWebsocketMessage(msg: RawData): void {
 			action.setTitle(title);
 		}
 	}
+}
+
+/**
+ * Processes the device list and re-matches devices after sleep/wake cycles.
+ * This is async to properly await getSettings() for each action.
+ * @param wsConnection The active WebSocket connection
+ */
+async function processDeviceList(wsConnection: WebSocket): Promise<void> {
+	for (const [actionId, inst] of instances.entries()) {
+		const originalDevId = inst.deviceId;
+		let devId = originalDevId;
+		let matchedDevice: Device | undefined;
+
+		// Validate that the saved device ID still exists in the current device list
+		// G HUB assigns dynamic IDs that can change after sleep/wake cycles
+		matchedDevice = devices.find((d) => d.id === devId);
+
+		if (!matchedDevice && devId) {
+			// Device ID no longer valid - try to re-match by G HUB display name first
+			if (inst.deviceDisplayName) {
+				matchedDevice = devices.find((d) => d.displayName === inst.deviceDisplayName);
+				if (matchedDevice) {
+					streamDeck.logger.info(
+						`Device ID changed after sleep/wake, re-matched "${inst.deviceDisplayName}" to ${matchedDevice.id}`,
+					);
+				}
+			}
+
+			// If still not found, try matching by user's custom name as fallback
+			if (!matchedDevice && inst.name) {
+				matchedDevice = devices.find((d) =>
+					d.displayName.toLowerCase().includes(inst.name.toLowerCase()),
+				);
+				if (matchedDevice) {
+					streamDeck.logger.info(
+						`Device ID changed, re-matched by custom name "${inst.name}" to ${matchedDevice.id}`,
+					);
+				}
+			}
+
+			// Last resort: fall back to first available device
+			if (!matchedDevice && devices.length > 0) {
+				streamDeck.logger.info(`Device ID ${devId} no longer valid, falling back to first device`);
+				matchedDevice = devices[0];
+			}
+
+			devId = matchedDevice?.id || "";
+		} else if (!devId && devices.length > 0) {
+			// No device set yet, use first available
+			matchedDevice = devices[0];
+			devId = matchedDevice.id;
+		}
+
+		if (devId && matchedDevice) {
+			inst.deviceId = devId;
+			inst.deviceDisplayName = matchedDevice.displayName;
+
+			// Persist the updated device ID and display name back to Stream Deck settings if changed
+			if (devId !== originalDevId || !inst.deviceDisplayName) {
+				const action = [...streamDeck.actions].find((a) => a.id === actionId);
+				if (action) {
+					try {
+						// Get current settings to preserve all existing values
+						const currentSettings = await action.getSettings<MonitorSettings>();
+						// Merge with updated device info
+						await action.setSettings({
+							...currentSettings,
+							device: devId,
+							deviceDisplayName: matchedDevice.displayName,
+						});
+						streamDeck.logger.debug(
+							`Persisted updated device settings for action ${actionId}: device=${devId}, displayName=${matchedDevice.displayName}`,
+						);
+					} catch (err) {
+						streamDeck.logger.error(`Failed to persist settings for action ${actionId}:`, err);
+					}
+				}
+			}
+			websocketSend(wsConnection, `/battery/${devId}/state`);
+		}
+	}
+
+	// Notify Property Inspector of updated device list
+	streamDeck.ui.current?.sendToPropertyInspector({
+		event: "getDevices",
+		items: devices.map((device) => ({ label: device.displayName, value: device.id })),
+	});
 }
 
 /**
