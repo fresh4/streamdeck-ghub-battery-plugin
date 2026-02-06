@@ -30,6 +30,10 @@ const BATTERY_RETRY_DELAY_MS = 2000; // Wait 2 seconds before retrying
 const MAX_BATTERY_RETRIES = 5; // Maximum retry attempts
 const batteryRetryCount = new Map<string, number>();
 
+// Slow recovery poll for devices that didn't respond after fast retries
+const recoveryTimers = new Map<string, NodeJS.Timeout>();
+const RECOVERY_POLL_INTERVAL_MS = 30_000; // Poll every 30 seconds
+
 /**
  * This action connects to an existing G Hub instance via its dedicated Websocket server and
  * monitors it for changes and updates, including changes in battery percentage and plugged in status.
@@ -151,6 +155,12 @@ function cleanupWebSocket(): void {
 	}
 	batteryRetryTimers.clear();
 	batteryRetryCount.clear();
+
+	// Clear any recovery poll timers
+	for (const timer of recoveryTimers.values()) {
+		clearInterval(timer);
+	}
+	recoveryTimers.clear();
 }
 
 /**
@@ -189,6 +199,10 @@ function handleWebsocketMessage(msg: RawData): void {
 		}
 		batteryRetryTimers.clear();
 		batteryRetryCount.clear();
+		for (const timer of recoveryTimers.values()) {
+			clearInterval(timer);
+		}
+		recoveryTimers.clear();
 
 		// Process device re-matching asynchronously to properly await getSettings
 		void processDeviceList(ws);
@@ -253,11 +267,15 @@ function handleWebsocketMessage(msg: RawData): void {
 					action.setTitle("");
 				}
 			}
+
+			// Start slow recovery poll - device may become available later
+			startRecoveryPoll(failedDevice);
 			return;
 		}
 
-		// Battery request succeeded - clear retry count for this device
+		// Battery request succeeded - clear retry count and stop recovery poll for this device
 		batteryRetryCount.delete(batteryState.payload.deviceId);
+		stopRecoveryPoll(batteryState.payload.deviceId);
 
 		// For the specific context and device, update its image and title to match what was
 		// received from the websocket updates.
@@ -363,6 +381,35 @@ async function processDeviceList(wsConnection: WebSocket): Promise<void> {
 		event: "getDevices",
 		items: devices.map((device) => ({ label: device.displayName, value: device.id })),
 	});
+}
+
+/**
+ * Starts a slow recovery poll for a device that didn't respond after fast retries.
+ * Periodically re-requests battery state until a successful response clears it.
+ */
+function startRecoveryPoll(deviceId: string): void {
+	if (recoveryTimers.has(deviceId)) return; // Already polling
+
+	streamDeck.logger.info(`Starting recovery poll for ${deviceId} every ${RECOVERY_POLL_INTERVAL_MS / 1000}s`);
+	const timer = setInterval(() => {
+		if (ws?.readyState === WebSocket.OPEN) {
+			streamDeck.logger.debug(`Recovery poll: requesting battery state for ${deviceId}`);
+			websocketSend(ws, `/battery/${deviceId}/state`);
+		}
+	}, RECOVERY_POLL_INTERVAL_MS);
+	recoveryTimers.set(deviceId, timer);
+}
+
+/**
+ * Stops the recovery poll for a device (called when battery state is successfully received).
+ */
+function stopRecoveryPoll(deviceId: string): void {
+	const timer = recoveryTimers.get(deviceId);
+	if (timer) {
+		streamDeck.logger.info(`Recovery poll cleared for ${deviceId} (battery state received)`);
+		clearInterval(timer);
+		recoveryTimers.delete(deviceId);
+	}
 }
 
 /**
