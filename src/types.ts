@@ -11,13 +11,18 @@ export type MonitorSettings = {
 	 */
 	pluggedIn?: boolean;
 	/**
-	 * The name of the device.
+	 * The name of the device (user-defined custom label).
 	 */
 	name?: string;
 	/**
 	 * The ID of the device.
 	 */
 	device: string;
+
+	/**
+	 * The G HUB display name of the device (used for re-matching after sleep/wake).
+	 */
+	deviceDisplayName?: string;
 
 	/**
 	 * Hexadecimal string for the background color.
@@ -114,6 +119,10 @@ export type Instance = {
 	 * Set through the menu dropdown.
 	 */
 	deviceId: string;
+	/**
+	 * The G HUB display name of the device (used for re-matching after sleep/wake).
+	 */
+	deviceDisplayName: string;
 	/**
 	 * Custom title, if any.
 	 * Set through the menu.
